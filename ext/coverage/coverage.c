@@ -1,0 +1,861 @@
+/************************************************
+
+  coverage.c -
+
+  $Author: $
+
+  Copyright (c) 2008 Yusuke Endoh
+
+************************************************/
+
+#include "internal/coverage.h"
+#include "internal/hash.h"
+#include "ruby.h"
+
+static enum {
+    IDLE,
+    SUSPENDED,
+    RUNNING
+} current_state = IDLE;
+static int current_mode;
+static VALUE cme2counter = Qnil;
+static VALUE me_set = Qnil;
+
+/*
+ * Method coverage result template:
+ *   method_tmpl_by_path: { path => { key => me or [me, ...] } }
+ * Each peek dups the per-path template and replaces the values with the
+ * call counts.  me_set and cme2counter are append-only and iterate in
+ * insertion order, so only the entries after the ones already seen are added.
+ */
+static VALUE method_tmpl_by_path = Qnil;
+static long method_tmpl_n_me_set = 0;
+static long method_tmpl_n_cme2counter = 0;
+
+static void
+method_template_reset(void)
+{
+    method_tmpl_by_path = Qnil;
+    method_tmpl_n_me_set = 0;
+    method_tmpl_n_cme2counter = 0;
+}
+
+/*
+ *  call-seq: Coverage.supported?(mode) -> true or false
+ *
+ *  Returns true if coverage measurement is supported for the given mode.
+ *
+ *  The mode should be one of the following symbols:
+ *  +:lines+, +:oneshot_lines+, +:branches+, +:methods+, +:eval+.
+ *
+ *  Example:
+ *
+ *    Coverage.supported?(:lines)  #=> true
+ *    Coverage.supported?(:all)    #=> false
+ */
+static VALUE
+rb_coverage_supported(VALUE self, VALUE _mode)
+{
+    ID mode = RB_SYM2ID(_mode);
+
+    return (
+        mode == rb_intern("lines") ||
+        mode == rb_intern("oneshot_lines") ||
+        mode == rb_intern("branches") ||
+        mode == rb_intern("methods") ||
+        mode == rb_intern("eval")
+    ) ? Qtrue : Qfalse;
+}
+
+/*
+ * call-seq:
+ *    Coverage.setup -> nil
+ *    Coverage.setup(type) -> nil
+ *    Coverage.setup(lines: false, branches: false, methods: false, eval: false, oneshot_lines: false) -> nil
+ *
+ * Performs setup for coverage measurement, but does not start coverage measurement.
+ * To start coverage measurement, use Coverage.resume.
+ *
+ * To perform both setup and start coverage measurement, Coverage.start can be used.
+ *
+ * With argument +type+ given and +type+ is symbol +:all+, enables all types of coverage
+ * (lines, branches, methods, and eval).
+ *
+ * Keyword arguments or hash +type+ can be given with each of the following keys:
+ *
+ * - +lines+: Enables line coverage that records the number of times each line was executed.
+ *   If +lines+ is enabled, +oneshot_lines+ cannot be enabled.
+ *   See {Lines Coverage}[rdoc-ref:Coverage@Lines+Coverage].
+ * - +branches+: Enables branch coverage that records the number of times each
+ *   branch in each conditional was executed. See {Branches Coverage}[rdoc-ref:Coverage@Branches+Coverage].
+ * - +methods+: Enables method coverage that records the number of times each method was exectued.
+ *   See {Methods Coverage}[rdoc-ref:Coverage@Methods+Coverage].
+ * - +eval+: Enables coverage for evaluations (e.g. Kernel#eval, Module#class_eval).
+ *   See {Eval Coverage}[rdoc-ref:Coverage@Eval+Coverage].
+ */
+static VALUE
+rb_coverage_setup(int argc, VALUE *argv, VALUE klass)
+{
+    VALUE coverages, opt;
+    int mode;
+
+    if (current_state != IDLE) {
+        rb_raise(rb_eRuntimeError, "coverage measurement is already setup");
+    }
+
+    rb_scan_args(argc, argv, "01", &opt);
+
+    if (argc == 0) {
+        mode = 0; /* compatible mode */
+    }
+    else if (opt == ID2SYM(rb_intern("all"))) {
+        mode = COVERAGE_TARGET_LINES | COVERAGE_TARGET_BRANCHES | COVERAGE_TARGET_METHODS | COVERAGE_TARGET_EVAL;
+    }
+    else {
+        mode = 0;
+        opt = rb_convert_type(opt, T_HASH, "Hash", "to_hash");
+
+        if (RTEST(rb_hash_lookup(opt, ID2SYM(rb_intern("lines")))))
+            mode |= COVERAGE_TARGET_LINES;
+        if (RTEST(rb_hash_lookup(opt, ID2SYM(rb_intern("branches")))))
+            mode |= COVERAGE_TARGET_BRANCHES;
+        if (RTEST(rb_hash_lookup(opt, ID2SYM(rb_intern("methods")))))
+            mode |= COVERAGE_TARGET_METHODS;
+        if (RTEST(rb_hash_lookup(opt, ID2SYM(rb_intern("oneshot_lines"))))) {
+            if (mode & COVERAGE_TARGET_LINES)
+                rb_raise(rb_eRuntimeError, "cannot enable lines and oneshot_lines simultaneously");
+            mode |= COVERAGE_TARGET_LINES;
+            mode |= COVERAGE_TARGET_ONESHOT_LINES;
+        }
+        if (RTEST(rb_hash_lookup(opt, ID2SYM(rb_intern("eval")))))
+            mode |= COVERAGE_TARGET_EVAL;
+    }
+
+    if (mode & COVERAGE_TARGET_METHODS) {
+        cme2counter = rb_ident_hash_new();
+        me_set = rb_ident_hash_new();
+    }
+    else {
+        cme2counter = Qnil;
+        me_set = Qnil;
+    }
+    method_template_reset();
+
+    coverages = rb_get_coverages();
+    if (!RTEST(coverages)) {
+        coverages = rb_hash_new();
+        rb_obj_hide(coverages);
+        current_mode = mode;
+        if (mode == 0) mode = COVERAGE_TARGET_LINES;
+        rb_set_coverages(coverages, mode, cme2counter, me_set);
+        current_state = SUSPENDED;
+    }
+    else if (current_mode != mode) {
+        rb_raise(rb_eRuntimeError, "cannot change the measuring target during coverage measurement");
+    }
+
+    return Qnil;
+}
+
+/*
+ * call-seq:
+ *    Coverage.resume  => nil
+ *
+ * Start/resume the coverage measurement.
+ *
+ * Caveat: Currently, only process-global coverage measurement is supported.
+ * You cannot measure per-thread coverage. If your process has multiple thread,
+ * using Coverage.resume/suspend to capture code coverage executed from only
+ * a limited code block, may yield misleading results.
+ */
+VALUE
+rb_coverage_resume(VALUE klass)
+{
+    if (current_state == IDLE) {
+        rb_raise(rb_eRuntimeError, "coverage measurement is not set up yet");
+    }
+    if (current_state == RUNNING) {
+        rb_raise(rb_eRuntimeError, "coverage measurement is already running");
+    }
+    rb_resume_coverages();
+    current_state = RUNNING;
+    return Qnil;
+}
+
+/*
+ * call-seq:
+ *    Coverage.start -> nil
+ *    Coverage.start(type) -> nil
+ *    Coverage.start(lines: false, branches: false, methods: false, eval: false, oneshot_lines: false) -> nil
+ *
+ * Enables coverage measurement.
+ * This method is equivalent to calling Coverage.setup with the arguments provided,
+ * and then calling Coverage.resume. See their respective documentation for more
+ * details.
+ */
+static VALUE
+rb_coverage_start(int argc, VALUE *argv, VALUE klass)
+{
+    rb_coverage_setup(argc, argv, klass);
+    rb_coverage_resume(klass);
+    return Qnil;
+}
+
+struct branch_coverage_result_builder
+{
+    int id;
+    VALUE result;
+    VALUE children;
+};
+
+/*
+ * Branch coverage result template, cached in branches[2]:
+ *   { base_key => { target_key => counter_index } }
+ * Each peek dups it and replaces the indexes with the counters, which avoids
+ * hashing the array keys again and again.
+ */
+static int
+branch_template_ii(VALUE _key, VALUE branch, VALUE v)
+{
+    struct branch_coverage_result_builder *b = (struct branch_coverage_result_builder *) v;
+
+    VALUE target_label = RARRAY_AREF(branch, 0);
+    VALUE target_first_lineno = RARRAY_AREF(branch, 1);
+    VALUE target_first_column = RARRAY_AREF(branch, 2);
+    VALUE target_last_lineno = RARRAY_AREF(branch, 3);
+    VALUE target_last_column = RARRAY_AREF(branch, 4);
+    VALUE counter_idx = RARRAY_AREF(branch, 5);
+    VALUE key = rb_ary_new_from_args(6, target_label, LONG2FIX(b->id++), target_first_lineno, target_first_column, target_last_lineno, target_last_column);
+    rb_ary_freeze(key);
+    rb_hash_aset(b->children, key, counter_idx);
+
+    return ST_CONTINUE;
+}
+
+static int
+branch_template_i(VALUE _key, VALUE branch_base, VALUE v)
+{
+    struct branch_coverage_result_builder *b = (struct branch_coverage_result_builder *) v;
+
+    VALUE base_type = RARRAY_AREF(branch_base, 0);
+    VALUE base_first_lineno = RARRAY_AREF(branch_base, 1);
+    VALUE base_first_column = RARRAY_AREF(branch_base, 2);
+    VALUE base_last_lineno = RARRAY_AREF(branch_base, 3);
+    VALUE base_last_column = RARRAY_AREF(branch_base, 4);
+    VALUE branches = RARRAY_AREF(branch_base, 5);
+    VALUE children = rb_hash_new();
+    VALUE key = rb_ary_new_from_args(6, base_type, LONG2FIX(b->id++), base_first_lineno, base_first_column, base_last_lineno, base_last_column);
+    rb_ary_freeze(key);
+    rb_hash_aset(b->result, key, children);
+    b->children = children;
+    rb_hash_foreach(branches, branch_template_ii, v);
+
+    return ST_CONTINUE;
+}
+
+/* returns [template, nbases, ntargets] */
+static VALUE
+branch_template(VALUE branches)
+{
+    VALUE structure = RARRAY_AREF(branches, 0);
+    VALUE counters = RARRAY_AREF(branches, 1);
+    long nbases = RHASH_SIZE(structure);
+    long ntargets = RARRAY_LEN(counters);
+    VALUE cache = RARRAY_LEN(branches) > 2 ? RARRAY_AREF(branches, 2) : Qnil;
+
+    if (!NIL_P(cache) &&
+        FIX2LONG(RARRAY_AREF(cache, 1)) == nbases &&
+        FIX2LONG(RARRAY_AREF(cache, 2)) == ntargets) {
+        return RARRAY_AREF(cache, 0);
+    }
+    else {
+        struct branch_coverage_result_builder b;
+        b.id = 0;
+        b.result = rb_hash_new();
+        rb_hash_foreach(structure, branch_template_i, (VALUE)&b);
+        cache = rb_ary_hidden_new(3);
+        rb_ary_push(cache, b.result);
+        rb_ary_push(cache, LONG2FIX(nbases));
+        rb_ary_push(cache, LONG2FIX(ntargets));
+        rb_ary_store(branches, 2, cache);
+        return b.result;
+    }
+}
+
+static int
+branch_fill_check(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    return ST_REPLACE;
+}
+
+/* children: {target_key => counter_index} -> {target_key => counter} */
+static int
+branch_fill_counter(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
+{
+    VALUE counters = (VALUE)argp;
+    *value = (st_data_t)RARRAY_AREF(counters, FIX2LONG((VALUE)*value));
+    return ST_CONTINUE;
+}
+
+struct branch_fill_arg
+{
+    VALUE result;
+    VALUE counters;
+};
+
+/* result: {base_key => children_template} -> {base_key => filled copy of children} */
+static int
+branch_fill_children(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
+{
+    struct branch_fill_arg *a = (struct branch_fill_arg *)argp;
+    VALUE children = rb_hash_dup((VALUE)*value);
+    rb_hash_stlike_foreach_with_replace(children, branch_fill_check, branch_fill_counter, (st_data_t)a->counters);
+    RB_OBJ_WRITE(a->result, value, children);
+    return ST_CONTINUE;
+}
+
+static VALUE
+branch_coverage(VALUE branches)
+{
+    struct branch_fill_arg a;
+    VALUE template = branch_template(branches);
+    a.counters = RARRAY_AREF(branches, 1);
+    a.result = rb_hash_dup(template);
+    rb_hash_stlike_foreach_with_replace(a.result, branch_fill_check, branch_fill_children, (st_data_t)&a);
+    return a.result;
+}
+
+struct method_template_add_arg {
+    long skip;
+    long i;
+    int check_me_set;   /* skip the entries in me_set (they are already added) */
+};
+
+static void
+method_template_add(VALUE me)
+{
+    struct rb_coverage_method_data d;
+    VALUE tmpl, key, mes;
+
+    if (!rb_coverage_method_data_of(me, Qnil, &d)) return;
+
+    tmpl = rb_hash_lookup(method_tmpl_by_path, d.path);
+    if (NIL_P(tmpl)) {
+        tmpl = rb_hash_new();
+        rb_hash_aset(method_tmpl_by_path, d.path, tmpl);
+    }
+    key = rb_ary_new_from_args(6, d.owner, d.method_id,
+                               d.first_lineno, d.first_column,
+                               d.last_lineno, d.last_column);
+    rb_ary_freeze(key);
+    mes = rb_hash_lookup(tmpl, key);
+    if (NIL_P(mes)) {
+        rb_hash_aset(tmpl, key, me);
+    }
+    else if (RB_TYPE_P(mes, T_ARRAY)) {
+        rb_ary_push(mes, me);
+    }
+    else {
+        VALUE ary = rb_ary_hidden_new(2);
+        rb_ary_push(ary, mes);
+        rb_ary_push(ary, me);
+        rb_hash_aset(tmpl, key, ary);
+    }
+}
+
+static int
+method_template_add_i(VALUE me, VALUE value, VALUE data)
+{
+    struct method_template_add_arg *arg = (struct method_template_add_arg *)data;
+    if (arg->i++ >= arg->skip) {
+        if (arg->check_me_set && RTEST(rb_hash_lookup2(me_set, me, Qfalse))) return ST_CONTINUE;
+        method_template_add(me);
+    }
+    return ST_CONTINUE;
+}
+
+static void
+method_template_update(void)
+{
+    struct method_template_add_arg arg;
+
+    if (NIL_P(method_tmpl_by_path)) {
+        method_tmpl_by_path = rb_hash_new();
+        method_tmpl_n_me_set = 0;
+        method_tmpl_n_cme2counter = 0;
+    }
+    if (RTEST(me_set) && RHASH_SIZE(me_set) > (size_t)method_tmpl_n_me_set) {
+        arg.skip = method_tmpl_n_me_set;
+        arg.i = 0;
+        arg.check_me_set = 0;
+        rb_hash_foreach(me_set, method_template_add_i, (VALUE)&arg);
+        method_tmpl_n_me_set = arg.i;
+    }
+    if (RTEST(cme2counter) && RHASH_SIZE(cme2counter) > (size_t)method_tmpl_n_cme2counter) {
+        arg.skip = method_tmpl_n_cme2counter;
+        arg.i = 0;
+        arg.check_me_set = RTEST(me_set);
+        rb_hash_foreach(cme2counter, method_template_add_i, (VALUE)&arg);
+        method_tmpl_n_cme2counter = arg.i;
+    }
+}
+
+static int
+method_fill_check(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    return ST_REPLACE;
+}
+
+static long
+method_call_count(VALUE me)
+{
+    VALUE c = rb_hash_lookup2(cme2counter, me, Qnil);
+    return FIXNUM_P(c) ? FIX2LONG(c) : 0;
+}
+
+/* methods: {key => me or [me, ...]} -> {key => count}, where count is the
+ * sum of the call counts of all the method entries sharing the key
+ * (methods redefined at the same location) */
+static int
+method_fill_count(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
+{
+    VALUE mes = (VALUE)*value;
+    long count;
+    if (RB_TYPE_P(mes, T_ARRAY)) {
+        long i;
+        count = 0;
+        for (i = 0; i < RARRAY_LEN(mes); i++) {
+            count += method_call_count(RARRAY_AREF(mes, i));
+            if (!POSFIXABLE(count)) count = FIXNUM_MAX;
+        }
+    }
+    else {
+        count = method_call_count(mes);
+    }
+    *value = (st_data_t)LONG2FIX(count);
+    return ST_CONTINUE;
+}
+
+static VALUE
+method_coverage(VALUE path)
+{
+    VALUE tmpl = rb_hash_lookup(method_tmpl_by_path, path);
+    VALUE methods;
+    if (NIL_P(tmpl)) {
+        methods = rb_hash_new();
+    }
+    else {
+        methods = rb_hash_dup(tmpl);
+        rb_hash_stlike_foreach_with_replace(methods, method_fill_check, method_fill_count, 0);
+    }
+    return methods;
+}
+
+static int
+coverage_peek_result_i(st_data_t key, st_data_t val, st_data_t h)
+{
+    VALUE path = (VALUE)key;
+    VALUE coverage = (VALUE)val;
+    VALUE coverages = (VALUE)h;
+    if (current_mode == 0) {
+        /* compatible mode */
+        VALUE lines = rb_ary_dup(RARRAY_AREF(coverage, COVERAGE_INDEX_LINES));
+        rb_ary_freeze(lines);
+        coverage = lines;
+    }
+    else {
+        VALUE h = rb_hash_new();
+
+        if (current_mode & COVERAGE_TARGET_LINES) {
+            VALUE lines = RARRAY_AREF(coverage, COVERAGE_INDEX_LINES);
+            const char *kw = (current_mode & COVERAGE_TARGET_ONESHOT_LINES) ? "oneshot_lines" : "lines";
+            lines = rb_ary_dup(lines);
+            rb_ary_freeze(lines);
+            rb_hash_aset(h, ID2SYM(rb_intern(kw)), lines);
+        }
+
+        if (current_mode & COVERAGE_TARGET_BRANCHES) {
+            VALUE branches = RARRAY_AREF(coverage, COVERAGE_INDEX_BRANCHES);
+            rb_hash_aset(h, ID2SYM(rb_intern("branches")), branch_coverage(branches));
+        }
+
+        if (current_mode & COVERAGE_TARGET_METHODS) {
+            rb_hash_aset(h, ID2SYM(rb_intern("methods")), method_coverage(path));
+        }
+
+        coverage = h;
+    }
+
+    rb_hash_aset(coverages, path, coverage);
+    return ST_CONTINUE;
+}
+
+/*
+ *  call-seq:
+ *     Coverage.peek_result  => hash
+ *
+ * Returns a hash that contains filename as key and coverage array as value.
+ * This is the same as <tt>Coverage.result(stop: false, clear: false)</tt>.
+ *
+ *   {
+ *     "file.rb" => [1, 2, nil],
+ *     ...
+ *   }
+ */
+static VALUE
+rb_coverage_peek_result(VALUE klass)
+{
+    VALUE coverages = rb_get_coverages();
+    VALUE ncoverages = rb_hash_new();
+    if (!RTEST(coverages)) {
+        rb_raise(rb_eRuntimeError, "coverage measurement is not enabled");
+    }
+
+    if (current_mode & COVERAGE_TARGET_METHODS) {
+        method_template_update();
+    }
+    rb_hash_foreach(coverages, coverage_peek_result_i, ncoverages);
+
+    rb_hash_freeze(ncoverages);
+    return ncoverages;
+}
+
+
+static int
+clear_cme2counter_i(VALUE key, VALUE value, VALUE unused)
+{
+    rb_hash_aset(cme2counter, key, INT2FIX(0));
+    return ST_CONTINUE;
+}
+
+/*
+ * call-seq:
+ *    Coverage.suspend  => nil
+ *
+ * Suspend the coverage measurement.
+ * You can use Coverage.resume to restart the measurement.
+ */
+VALUE
+rb_coverage_suspend(VALUE klass)
+{
+    if (current_state != RUNNING) {
+        rb_raise(rb_eRuntimeError, "coverage measurement is not running");
+    }
+    rb_suspend_coverages();
+    current_state = SUSPENDED;
+    return Qnil;
+}
+
+/*
+ *  call-seq:
+ *     Coverage.result(stop: true, clear: true)  => hash
+ *
+ * Returns a hash that contains filename as key and coverage array as value.
+ * If +clear+ is true, it clears the counters to zero.
+ * If +stop+ is true, it disables coverage measurement.
+ */
+static VALUE
+rb_coverage_result(int argc, VALUE *argv, VALUE klass)
+{
+    VALUE ncoverages;
+    VALUE opt;
+    int stop = 1, clear = 1;
+
+    if (current_state == IDLE) {
+        rb_raise(rb_eRuntimeError, "coverage measurement is not enabled");
+    }
+
+    rb_scan_args(argc, argv, "01", &opt);
+
+    if (argc == 1) {
+        opt = rb_convert_type(opt, T_HASH, "Hash", "to_hash");
+        stop = RTEST(rb_hash_lookup(opt, ID2SYM(rb_intern("stop"))));
+        clear = RTEST(rb_hash_lookup(opt, ID2SYM(rb_intern("clear"))));
+    }
+
+    ncoverages = rb_coverage_peek_result(klass);
+    if (stop && !clear) {
+        rb_warn("stop implies clear");
+        clear = 1;
+    }
+    if (clear) {
+        rb_clear_coverages();
+        /* Reset call counts, but keep me_set: the set of defined methods
+         * persists across clear so that uncalled methods keep showing up. */
+        if (!NIL_P(cme2counter)) rb_hash_foreach(cme2counter, clear_cme2counter_i, Qnil);
+    }
+    if (stop) {
+        if (current_state == RUNNING) {
+            rb_coverage_suspend(klass);
+        }
+        rb_reset_coverages();
+        cme2counter = Qnil;
+        me_set = Qnil;
+        method_template_reset();
+        current_state = IDLE;
+    }
+    return ncoverages;
+}
+
+
+/*
+ *  call-seq:
+ *     Coverage.state  => :idle, :suspended, :running
+ *
+ * Returns the state of the coverage measurement.
+ */
+static VALUE
+rb_coverage_state(VALUE klass)
+{
+    switch (current_state) {
+        case IDLE: return ID2SYM(rb_intern("idle"));
+        case SUSPENDED: return ID2SYM(rb_intern("suspended"));
+        case RUNNING: return ID2SYM(rb_intern("running"));
+    }
+    return Qnil;
+}
+
+/*
+ *  call-seq:
+ *     Coverage.running?  => bool
+ *
+ * Returns true if coverage stats are currently being collected (after
+ * Coverage.start call, but before Coverage.result call)
+ */
+static VALUE
+rb_coverage_running(VALUE klass)
+{
+    return current_state == RUNNING ? Qtrue : Qfalse;
+}
+
+/* \Coverage provides coverage measurement feature for Ruby.
+ *
+ * Only process-global coverage measurement is supported, meaning
+ * that coverage cannot be measure on a per-thread basis.
+ *
+ * = Quick Start
+ *
+ * 1. Load coverage using <tt>require "coverage"</tt>.
+ * 2. Call Coverage.start to set up and begin coverage measurement.
+ * 3. All Ruby code loaded following the call to Coverage.start will have
+ *    coverage measurement.
+ * 4. Coverage results can be fetched by calling Coverage.result, which returns a
+ *    hash that contains filenames as the keys and coverage arrays as the values.
+ *    Each element of the coverage array gives the number of times each line was
+ *    executed. A +nil+ value means coverage was disabled for that line (e.g.
+ *    lines like +else+ and +end+).
+ *
+ * = Examples
+ *
+ * In file +fib.rb+:
+ *
+ *   def fibonacci(n)
+ *     if n == 0
+ *       0
+ *     elsif n == 1
+ *       1
+ *     else
+ *       fibonacci(n - 1) + fibonacci(n - 2)
+ *     end
+ *   end
+ *
+ *   puts fibonacci(10)
+ *
+ * In another file, coverage can be measured:
+ *
+ *   require "coverage"
+ *   Coverage.start
+ *   require "fib.rb"
+ *   Coverage.result # => {"fib.rb" => [1, 177, 34, 143, 55, nil, 88, nil, nil, nil, 1]}
+ *
+ * == Lines \Coverage
+ *
+ * Lines coverage reports the number of line executions for each line.
+ * If the coverage mode is not explicitly specified when starting coverage,
+ * lines coverage is used as the default.
+ *
+ *   require "coverage"
+ *   Coverage.start(lines: true)
+ *   require "fib"
+ *   Coverage.result # => {"fib.rb" => {lines: [1, 177, 34, 143, 55, nil, 88, nil, nil, nil, 1]}}
+ *
+ * The returned hash differs depending on how Coverage.setup or Coverage.start
+ * was executed.
+ *
+ * If Coverage.start or Coverage.setup was called with no arguments, it returns a
+ * hash which contains filenames as the keys and coverage arrays as the values.
+ *
+ * If Coverage.start or Coverage.setup was called with <tt>line: true</tt>, it
+ * returns a hash which contains filenames as the keys and hashes as the values.
+ * The value hash has a key +:lines+ where the value is a coverage array.
+ *
+ * Each element of the coverage array gives the number of times the line was
+ * executed. A +nil+ value in the coverage array means coverage was disabled
+ * for that line (e.g. lines like +else+ and +end+).
+ *
+ * == Oneshot Lines \Coverage
+ *
+ * Oneshot lines coverage is similar to lines coverage, but instead of reporting
+ * the number of times a line was executed, it only reports the lines that were
+ * executed.
+ *
+ *   require "coverage"
+ *   Coverage.start(oneshot_lines: true)
+ *   require "fib"
+ *   Coverage.result # => {"fib.rb" => {oneshot_lines: [1, 11, 2, 4, 7, 5, 3]}}
+ *
+ * The value of the oneshot lines coverage result is an array containing the
+ * line numbers that were executed.
+ *
+ * == Branches \Coverage
+ *
+ * Branches coverage reports the number of times each branch within each conditional
+ * was executed.
+ *
+ *   require "coverage"
+ *   Coverage.start(branches: true)
+ *   require "fib"
+ *   Coverage.result
+ *   # => {"fib.rb" => {
+ *   #      branches: {
+ *   #        [:if, 0, 2, 2, 8, 5] => {
+ *   #          [:then, 1, 3, 4, 3, 5] => 34,
+ *   #          [:else, 2, 4, 2, 8, 5] => 143},
+ *   #        [:if, 3, 4, 2, 8, 5] => {
+ *   #          [:then, 4, 5, 4, 5, 5] => 55,
+ *   #          [:else, 5, 7, 4, 7, 39] => 88}}}}
+ *
+ * Each entry within the branches hash is a conditional, the value of which is
+ * another hash where each entry is a branch in that conditional. The keys are
+ * arrays containing information about the branch and the values are the number
+ * of times the branch was executed.
+ *
+ * The information that makes up the array that are the keys for conditional or
+ * branches are the following, from left to right:
+ *
+ * 1. A label for the type of branch or conditional (e.g. +:if+, +:then+, +:else+).
+ * 2. A unique identifier.
+ * 3. Starting line number.
+ * 4. Starting column number.
+ * 5. Ending line number.
+ * 6. Ending column number.
+ *
+ * == Methods \Coverage
+ *
+ * Methods coverage reports how many times each method was executed.
+ *
+ *   require "coverage"
+ *   Coverage.start(methods: true)
+ *   require "fib"
+ *   p Coverage.result #=> {"fib.rb" => {methods: {[Object, :fibonacci, 1, 0, 9, 3] => 177}}}
+ *
+ * Each entry within the methods hash represents a method. The keys are arrays
+ * containing hash are the number of times the method was executed, and the keys are
+ * identifying information about the method.
+ *
+ * The information that makes up each key identifying a method is the following,
+ * from left to right:
+ *
+ * 1. Class that the method was defined in.
+ * 2. Method name as a Symbol.
+ * 3. Starting line number of the method.
+ * 4. Starting column number of the method.
+ * 5. Ending line number of the method.
+ * 6. Ending column number of the method.
+ *
+ * == Eval \Coverage
+ *
+ * Eval coverage can be combined with the coverage types above to track
+ * coverage for eval.
+ *
+ *   require "coverage"
+ *   Coverage.start(eval: true, lines: true)
+ *
+ *   eval(<<~RUBY, nil, "eval 1")
+ *     ary = []
+ *     10.times do |i|
+ *       ary << "hello" * i
+ *     end
+ *   RUBY
+ *
+ *   Coverage.result # => {"eval 1" => {lines: [1, 1, 10, nil]}}
+ *
+ * Note that the eval must have a filename assigned, otherwise coverage
+ * will not be measured.
+ *
+ *   require "coverage"
+ *   Coverage.start(eval: true, lines: true)
+ *
+ *   eval(<<~RUBY)
+ *     ary = []
+ *     10.times do |i|
+ *       ary << "hello" * i
+ *     end
+ *   RUBY
+ *
+ *   Coverage.result # => {"(eval)" => {lines: [nil, nil, nil, nil]}}
+ *
+ * Also note that if a line number is assigned to the eval and it is not 1,
+ * then the resulting coverage will be padded with +nil+ if the line number is
+ * greater than 1, and truncated if the line number is less than 1.
+ *
+ *   require "coverage"
+ *   Coverage.start(eval: true, lines: true)
+ *
+ *   eval(<<~RUBY, nil, "eval 1", 3)
+ *     ary = []
+ *     10.times do |i|
+ *       ary << "hello" * i
+ *     end
+ *   RUBY
+ *
+ *  eval(<<~RUBY, nil, "eval 2", -1)
+ *     ary = []
+ *     10.times do |i|
+ *       ary << "hello" * i
+ *     end
+ *   RUBY
+ *
+ *   Coverage.result
+ *   # => {"eval 1" => {lines: [nil, nil, 1, 1, 10, nil]}, "eval 2" => {lines: [10, nil]}}
+ *
+ * == All \Coverage Modes
+ *
+ * All modes of coverage can be enabled simultaneously using the Symbol +:all+.
+ * However, note that this mode runs lines coverage and not oneshot lines since
+ * they cannot be ran simultaneously.
+ *
+ *   require "coverage"
+ *   Coverage.start(:all)
+ *   require "fib"
+ *   Coverage.result
+ *   # => {"fib.rb" => {
+ *   #      lines: [1, 177, 34, 143, 55, nil, 88, nil, nil, nil, 1],
+ *   #      branches: {
+ *   #        [:if, 0, 2, 2, 8, 5] => {
+ *   #          [:then, 1, 3, 4, 3, 5] => 34,
+ *   #          [:else, 2, 4, 2, 8, 5] => 143},
+ *   #        [:if, 3, 4, 2, 8, 5] => {
+ *   #          [:then, 4, 5, 4, 5, 5] => 55,
+ *   #          [:else, 5, 7, 4, 7, 39] => 88}}}},
+ *   #      methods: {[Object, :fibonacci, 1, 0, 9, 3] => 177}}}
+ */
+void
+Init_coverage(void)
+{
+    VALUE rb_mCoverage = rb_define_module("Coverage");
+
+    rb_define_singleton_method(rb_mCoverage, "supported?", rb_coverage_supported, 1);
+
+    rb_define_module_function(rb_mCoverage, "setup", rb_coverage_setup, -1);
+    rb_define_module_function(rb_mCoverage, "start", rb_coverage_start, -1);
+    rb_define_module_function(rb_mCoverage, "resume", rb_coverage_resume, 0);
+    rb_define_module_function(rb_mCoverage, "suspend", rb_coverage_suspend, 0);
+    rb_define_module_function(rb_mCoverage, "result", rb_coverage_result, -1);
+    rb_define_module_function(rb_mCoverage, "peek_result", rb_coverage_peek_result, 0);
+    rb_define_module_function(rb_mCoverage, "state", rb_coverage_state, 0);
+    rb_define_module_function(rb_mCoverage, "running?", rb_coverage_running, 0);
+    rb_global_variable(&cme2counter);
+    rb_global_variable(&me_set);
+    rb_global_variable(&method_tmpl_by_path);
+}

@@ -1,0 +1,55 @@
+# -*- ruby -*-
+_VERSION = ["", "ext/io/console/"].find do |dir|
+  begin
+    break File.open(File.join(__dir__, "#{dir}console.c")) {|f|
+      f.gets("\nIO_CONSOLE_VERSION ")
+      f.gets[/"(.+)"/, 1]
+    }
+  rescue Errno::ENOENT
+  end
+end
+
+Gem::Specification.new do |s|
+  s.name = "io-console"
+  s.version = _VERSION
+  s.summary = "Console interface"
+  s.email = "nobu@ruby-lang.org"
+  s.description = "add console capabilities to IO instances."
+  s.required_ruby_version = ">= 2.6.0"
+  s.homepage = "https://github.com/ruby/io-console"
+  s.metadata["source_code_url"] = s.homepage
+  s.metadata["changelog_uri"] = s.homepage + "/releases"
+  s.authors = ["Nobu Nakada"]
+  s.require_path = %[lib]
+  s.files = %w[
+    .document
+    BSDL
+    COPYING
+    README.md
+    ext/io/console/console.c
+    ext/io/console/extconf.rb
+    ext/io/console/win32_vk.inc
+    lib/io/console/size.rb
+  ]
+  s.extensions = %w[ext/io/console/extconf.rb]
+
+  if Gem::Platform === s.platform and s.platform =~ 'java'
+    s.files.delete_if {|f| f.start_with?("ext/")}
+    s.extensions.clear
+    s.require_paths.unshift('jruby/lib')
+    s.files.concat(%w[
+      jruby/lib/io/console.rb
+      jruby/lib/io/console/backend/ffi/termios.rb
+      jruby/lib/io/console/backend/ffi/windows.rb
+      jruby/lib/io/console/backend/stty.rb
+      jruby/lib/io/console/backend/stub.rb
+      jruby/lib/io/console/common.rb
+      jruby/lib/io/console/constants/bsd.rb
+      jruby/lib/io/console/constants/linux.rb
+      jruby/lib/io/console/constants/windows.rb
+      jruby/lib/io/console/version.rb
+    ])
+  end
+
+  s.licenses = ["Ruby", "BSD-2-Clause"]
+end

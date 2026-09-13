@@ -1,0 +1,23 @@
+#option platform cygwin|mingw|mswin
+#option nodynamic
+
+cgi/escape
+continuation
+coverage
+date
+digest/*
+erb/escape
+etc
+fcntl
+io/*
+json
+json/*
+objspace
+#openssl
+rbconfig/sizeof
+#ripper
+socket
+stringio
+strscan
+#syslog
+#zlib
