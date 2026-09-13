@@ -1,0 +1,6 @@
+include Makefile
+include $(srcdir)/template/GNUmakefile.in
+
+vitadir = $(srcdir)/vita
+
+vita/vita.$(OBJEXT): $(vitadir)/vita.c $(vitadir)/vita.h $(PLATFORM_D)

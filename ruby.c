@@ -40,6 +40,10 @@
 # include <sys/param.h>
 #endif
 
+#if defined(__vita__) || defined(__arm_vita__)
+# include "vita/vita.h"
+#endif
+
 #include "dln.h"
 #include "eval_intern.h"
 #include "internal.h"
@@ -3301,6 +3305,8 @@ ruby_sysinit(int *argc, char ***argv)
 {
 #if defined(_WIN32)
     rb_w32_sysinit(argc, argv);
+#elif defined(__vita__) || defined(__arm_vita__)
+    rb_vita_init();
 #endif
     if (*argc >= 0 && *argv) {
         origarg.argc = *argc;

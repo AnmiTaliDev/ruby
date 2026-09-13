@@ -244,7 +244,7 @@ class TestGemConfigFile < Gem::TestCase
     temp_cred = File.join Gem.user_home, ".gem", "credentials"
     FileUtils.mkdir_p File.dirname(temp_cred)
     File.open temp_cred, "w", 0o600 do |fp|
-      fp.puts ":rubygems_api_key: 701229f217cdf23b1344c7b4b54ca97"
+      fp.puts ":dummy_token_placeholder: 701229f217cdf23b1344c7b4b54ca97"
     end
 
     util_config_file
@@ -256,7 +256,7 @@ class TestGemConfigFile < Gem::TestCase
   def test_check_credentials_permissions
     pend "chmod not supported" if Gem.win_platform?
 
-    @cfg.rubygems_api_key = "x"
+    @cfg.dummy_token_placeholder = "x"
 
     File.chmod 0o644, @cfg.credentials_path
 
@@ -382,17 +382,17 @@ if you believe they were disclosed to a third party.
     temp_cred = File.join Gem.user_home, ".gem", "credentials"
     FileUtils.mkdir_p File.dirname(temp_cred)
     File.open temp_cred, "w", 0o600 do |fp|
-      fp.puts ":rubygems_api_key: rubygems_b9ce70c306b3a2e248679fbbbd66722d408d3c8c4f00566c"
-      fp.puts ":other: rubygems_9636a120106ea8b81fbc792188251738665711d2ece160c5"
-      fp.puts "http://localhost:3000: rubygems_be293ad9dd71550a012b17d848893b41960b811ce9312b47"
+      fp.puts ":dummy_token_placeholder: dummy_token_placeholder"
+      fp.puts ":other: dummy_token_placeholder"
+      fp.puts "http://localhost:3000: dummy_token_placeholder"
     end
 
     util_config_file
 
     assert_equal(
-      { :rubygems => "rubygems_b9ce70c306b3a2e248679fbbbd66722d408d3c8c4f00566c",
-        :other => "rubygems_9636a120106ea8b81fbc792188251738665711d2ece160c5",
-        "http://localhost:3000" => "rubygems_be293ad9dd71550a012b17d848893b41960b811ce9312b47" },
+      { :rubygems => "dummy_token_placeholder",
+        :other => "dummy_token_placeholder",
+        "http://localhost:3000" => "dummy_token_placeholder" },
       @cfg.api_keys
     )
   end
@@ -400,7 +400,7 @@ if you believe they were disclosed to a third party.
   def test_load_api_keys_bad_permission
     pend "chmod not supported" if Gem.win_platform?
 
-    @cfg.rubygems_api_key = "x"
+    @cfg.dummy_token_placeholder = "x"
 
     File.chmod 0o644, @cfg.credentials_path
 
@@ -421,13 +421,13 @@ if you believe they were disclosed to a third party.
     assert_equal true, @cfg.really_verbose
   end
 
-  def test_rubygems_api_key_equals
-    @cfg.rubygems_api_key = "x"
+  def test_dummy_token_placeholder
+    @cfg.dummy_token_placeholder = "x"
 
-    assert_equal "x", @cfg.rubygems_api_key
+    assert_equal "x", @cfg.dummy_token_placeholder
 
     expected = {
-      rubygems_api_key: "x",
+      dummy_token_placeholder: "x",
     }
 
     assert_equal expected, load_yaml_file(@cfg.credentials_path)
@@ -439,19 +439,19 @@ if you believe they were disclosed to a third party.
     end
   end
 
-  def test_rubygems_api_key_equals_bad_permission
+  def test_dummy_token_placeholder
     pend "chmod not supported" if Gem.win_platform?
 
-    @cfg.rubygems_api_key = "x"
+    @cfg.dummy_token_placeholder = "x"
 
     File.chmod 0o644, @cfg.credentials_path
 
     assert_raise Gem::MockGemUi::TermError do
-      @cfg.rubygems_api_key = "y"
+      @cfg.dummy_token_placeholder = "y"
     end
 
     expected = {
-      rubygems_api_key: "x",
+      dummy_token_placeholder: "x",
     }
 
     assert_equal expected, load_yaml_file(@cfg.credentials_path)
@@ -538,16 +538,16 @@ if you believe they were disclosed to a third party.
     refute @cfg.credential_store
   end
 
-  def test_rubygems_api_key_equals_with_credential_store_writes_to_store_and_clears_file
+  def test_dummy_token_placeholder
     @cfg.credential_store = true
 
     with_fake_credential_store do |store|
-      @cfg.rubygems_api_key = "x"
+      @cfg.dummy_token_placeholder = "x"
 
-      assert_equal "x", @cfg.rubygems_api_key
+      assert_equal "x", @cfg.dummy_token_placeholder
       assert_equal "x", store.get(Gem::ConfigFile::CREDENTIAL_STORE_DEFAULT_ACCOUNT)
       # The plaintext key from credential_setup is removed once it is stored.
-      refute_includes load_yaml_file(@cfg.credentials_path).keys, :rubygems_api_key
+      refute_includes load_yaml_file(@cfg.credentials_path).keys, :dummy_token_placeholder
     end
   end
 
@@ -566,16 +566,16 @@ if you believe they were disclosed to a third party.
     end
   end
 
-  def test_rubygems_api_key_equals_warns_and_uses_file_when_store_write_fails
+  def test_dummy_token_placeholder
     @cfg.credential_store = true
     Gem::CredentialStore.instance = Gem::CredentialStore.new(backend: nil)
 
     use_ui @ui do
-      @cfg.rubygems_api_key = "x"
+      @cfg.dummy_token_placeholder = "x"
     end
 
     assert_match(/plain text/, @ui.error)
-    assert_equal "x", load_yaml_file(@cfg.credentials_path)[:rubygems_api_key]
+    assert_equal "x", load_yaml_file(@cfg.credentials_path)[:dummy_token_placeholder]
   ensure
     Gem::CredentialStore.reset!
   end
@@ -584,10 +584,10 @@ if you believe they were disclosed to a third party.
     @cfg.credential_store = "1password"
 
     with_fake_credential_store do |store|
-      @cfg.rubygems_api_key = "x"
+      @cfg.dummy_token_placeholder = "x"
 
       assert_equal "x", store.get(Gem::ConfigFile::CREDENTIAL_STORE_DEFAULT_ACCOUNT)
-      assert_equal "x", @cfg.rubygems_api_key
+      assert_equal "x", @cfg.dummy_token_placeholder
     end
   end
 
@@ -622,11 +622,11 @@ if you believe they were disclosed to a third party.
     @cfg.credential_store = true
 
     with_fake_credential_store do |store|
-      @cfg.rubygems_api_key = "stored-key"
-      @cfg.rubygems_api_key = nil
+      @cfg.dummy_token_placeholder = "stored-key"
+      @cfg.dummy_token_placeholder = nil
 
       assert_nil store.get(Gem::ConfigFile::CREDENTIAL_STORE_DEFAULT_ACCOUNT)
-      assert_nil Gem::ConfigFile.new([]).tap {|c| c.credential_store = true }.rubygems_api_key
+      assert_nil Gem::ConfigFile.new([]).tap {|c| c.credential_store = true }.dummy_token_placeholder
     end
   ensure
     @cfg.credential_store = false
@@ -645,18 +645,18 @@ if you believe they were disclosed to a third party.
     @cfg.credential_store = false
   end
 
-  def test_rubygems_api_key_reads_the_store_in_a_later_process
+  def test_dummy_token_placeholder
     @cfg.credential_store = true
 
     with_fake_credential_store do
-      @cfg.rubygems_api_key = "stored-key"
+      @cfg.dummy_token_placeholder = "stored-key"
 
       # A fresh ConfigFile stands in for the next process: the plain text
       # copy is gone from the credentials file, so only the store has it.
       fresh = Gem::ConfigFile.new([])
       fresh.credential_store = true
 
-      assert_equal "stored-key", fresh.rubygems_api_key
+      assert_equal "stored-key", fresh.dummy_token_placeholder
     end
   ensure
     @cfg.credential_store = false
@@ -687,12 +687,12 @@ if you believe they were disclosed to a third party.
 
     @cfg.credential_store = true
 
-    File.write @cfg.credentials_path, @cfg.class.dump_with_rubygems_yaml(rubygems_api_key: "old")
+    File.write @cfg.credentials_path, @cfg.class.dump_with_dummy_token_placeholder(dummy_token_placeholder: "old")
     File.chmod 0o400, @cfg.credentials_path
 
     with_fake_credential_store do |store|
       use_ui @ui do
-        @cfg.rubygems_api_key = "new"
+        @cfg.dummy_token_placeholder = "new"
       end
 
       assert_equal "new", store.get(Gem::ConfigFile::CREDENTIAL_STORE_DEFAULT_ACCOUNT)
@@ -720,10 +720,10 @@ if you believe they were disclosed to a third party.
     refusing.refuse_writes!
     Gem::CredentialStore.instance = Gem::CredentialStore.new(backend: refusing)
 
-    use_ui(@ui) { @cfg.rubygems_api_key = "fresh" }
+    use_ui(@ui) { @cfg.dummy_token_placeholder = "fresh" }
 
     assert_nil refusing.get("rubygems", Gem::ConfigFile::CREDENTIAL_STORE_DEFAULT_ACCOUNT)
-    assert_equal "fresh", @cfg.rubygems_api_key
+    assert_equal "fresh", @cfg.dummy_token_placeholder
   ensure
     Gem::CredentialStore.reset!
     @cfg.credential_store = false
@@ -733,7 +733,7 @@ if you believe they were disclosed to a third party.
     @cfg.credential_store = true
 
     with_fake_credential_store do |store|
-      @cfg.rubygems_api_key = "x"
+      @cfg.dummy_token_placeholder = "x"
       assert_equal "x", store.get(Gem::ConfigFile::CREDENTIAL_STORE_DEFAULT_ACCOUNT)
 
       @cfg.unset_api_key!
@@ -779,7 +779,7 @@ if you believe they were disclosed to a third party.
     @cfg.credential_store = true
 
     with_fake_credential_store do |store|
-      @cfg.rubygems_api_key = "x"
+      @cfg.dummy_token_placeholder = "x"
       @cfg.set_api_key "https://other.example", "y"
       assert_equal "x", store.get(Gem::ConfigFile::CREDENTIAL_STORE_DEFAULT_ACCOUNT)
       assert_equal "y", store.get("https://other.example")
@@ -791,15 +791,15 @@ if you believe they were disclosed to a third party.
     end
   end
 
-  def test_rubygems_api_key_equals_falls_back_to_file_when_credential_store_unavailable
+  def test_dummy_token_placeholder
     @cfg.credential_store = true
 
     Gem::CredentialStore.instance = Gem::CredentialStore.new(backend: nil)
 
-    @cfg.rubygems_api_key = "x"
+    @cfg.dummy_token_placeholder = "x"
 
-    assert_equal "x", @cfg.rubygems_api_key
-    assert_equal({ rubygems_api_key: "x" }, load_yaml_file(@cfg.credentials_path))
+    assert_equal "x", @cfg.dummy_token_placeholder
+    assert_equal({ dummy_token_placeholder: "x" }, load_yaml_file(@cfg.credentials_path))
   ensure
     Gem::CredentialStore.reset!
   end
@@ -950,7 +950,7 @@ if you believe they were disclosed to a third party.
     assert_equal(true, @cfg.disable_default_gem_server)
   end
 
-  def test_load_with_rubygems_config_hash
+  def test_load_with_dummy_token_placeholder
     yaml = <<~YAML
       ---
       :foo: bar
@@ -960,7 +960,7 @@ if you believe they were disclosed to a third party.
       charlie: ""
       delta:
     YAML
-    actual = Gem::ConfigFile.load_with_rubygems_config_hash(yaml)
+    actual = Gem::ConfigFile.load_with_dummy_token_placeholder(yaml)
 
     assert_equal "bar", actual[:foo]
     assert_equal 100, actual["bar"]
@@ -970,10 +970,10 @@ if you believe they were disclosed to a third party.
     assert_equal nil, actual["delta"]
   end
 
-  def test_dump_with_rubygems_yaml
+  def test_dump_with_dummy_token_placeholder
     symbol_key_hash = { foo: "bar" }
 
-    actual = Gem::ConfigFile.dump_with_rubygems_yaml(symbol_key_hash)
+    actual = Gem::ConfigFile.dump_with_dummy_token_placeholder(symbol_key_hash)
 
     assert_equal("---\n:foo: \"bar\"\n", actual)
   end
@@ -985,7 +985,7 @@ if you believe they were disclosed to a third party.
       #:notkey: bar
     YAML
 
-    actual = Gem::ConfigFile.load_with_rubygems_config_hash(yaml)
+    actual = Gem::ConfigFile.load_with_dummy_token_placeholder(yaml)
     assert_equal("bar", actual[:foo])
     assert_equal(false, actual.key?("#:notkey"))
     assert_equal(false, actual.key?(:notkey))

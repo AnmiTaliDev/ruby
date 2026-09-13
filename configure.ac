@@ -201,6 +201,11 @@ AS_CASE(["$target_cpu-$target_os"],
         target="arm64-${target@%:@aarch64-}"
         AS_IF([test -n "$target_alias"], [target_alias="arm64-${target_alias@%:@aarch64-}"])
     ])
+AS_CASE(["$target_vendor"],
+    [vita], [
+        target_os=vita
+    ])
+
 
 AC_ARG_PROGRAM
 RUBY_RM_RECURSIVE
@@ -503,6 +508,9 @@ AS_CASE(["$build_os"],
     AC_MSG_RESULT($suppress_ld_waring)
   ])
 AS_CASE(["$target_os"],
+  [vita*], [
+    FIRSTMAKEFILE=GNUmakefile:vita/GNUmakefile.in
+  ],
   [wasi*], [
     # Clang linker automatically uses wasm-opt with -O if it found.
     # https://github.com/llvm/llvm-project/blob/812828984c10857a4cd260eb638c52a4411f9143/clang/lib/Driver/ToolChains/WebAssembly.cpp#L95-L118
@@ -903,7 +911,7 @@ AS_IF([test "$GCC" = yes], [
 
     # -fstack-protector
     AS_CASE(["$target_os"],
-    [emscripten*|wasi*], [
+    [emscripten*|wasi*|vita*], [
 	stack_protector=no
     ])
     AS_IF([test -z "${stack_protector+set}"], [
@@ -1388,6 +1396,11 @@ main()
 		RUBY_APPEND_OPTIONS(LDFLAGS, "-sASYNCIFY")
 		RUBY_APPEND_OPTIONS(LDFLAGS, "-sFORCE_FILESYSTEM=1")
 		ac_cv_func_shutdown=no
+		],
+	[vita*],[	LIBS="-lm $LIBS"
+		ac_cv_func_fork=no
+		ac_cv_func_waitpid=no
+		ac_cv_func_kill=no
 		],
 [wasi*],[	LIBS="-lm -lwasi-emulated-mman -lwasi-emulated-signal -lwasi-emulated-getpid -lwasi-emulated-process-clocks $LIBS"
 		RUBY_APPEND_OPTIONS(CFLAGS, -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID -D_WASI_EMULATED_PROCESS_CLOCKS)
@@ -2131,7 +2144,7 @@ AS_CASE(["$target_os"],[freebsd*],[
 
 # dup and dup2 are always available except for WASI
 AS_CASE(["$target_os"],
-    [wasi*], [],
+    [wasi*|vita*], [],
     [
         RUBY_REQUIRE_FUNCS(dup dup2)
     ]
@@ -2857,6 +2870,9 @@ AS_CASE([$coroutine_type], [yes|''], [
         ],
         [*-haiku*], [
             coroutine_type=pthread
+        ],
+        [arm*-vita*], [
+            coroutine_type=arm32
         ],
         [*-emscripten*], [
             coroutine_type=emscripten
@@ -4290,6 +4306,10 @@ enum {
 	    LIBRUBYARG='-l$(RUBY_SO_NAME)'
 	])
 	],
+    [vita*], [
+        AC_LIBOBJ([vita/vita])
+        PLATFORM_DIR=vita
+    ],
     [wasi*], [
         AC_LIBOBJ([wasm/missing])
         AC_LIBOBJ([wasm/runtime])
