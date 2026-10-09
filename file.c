@@ -1007,7 +1007,7 @@ stat_atimespec(const struct stat *st)
 #elif defined(HAVE_STRUCT_STAT_ST_ATIMENSEC)
     ts.tv_nsec = (uint32_t)st->st_atimensec;
 #else
-    ts.tv_nsec = 0
+    ts.tv_nsec = 0;
 #endif
     return ts;
 }

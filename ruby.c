@@ -44,6 +44,10 @@
 # include "vita/vita.h"
 #endif
 
+#if defined(__ps2sdk__)
+# include "ps2/ps2.h"
+#endif
+
 #include "dln.h"
 #include "eval_intern.h"
 #include "internal.h"
@@ -3307,6 +3311,8 @@ ruby_sysinit(int *argc, char ***argv)
     rb_w32_sysinit(argc, argv);
 #elif defined(__vita__) || defined(__arm_vita__)
     rb_vita_init();
+#elif defined(__ps2sdk__)
+    rb_ps2_init();
 #endif
     if (*argc >= 0 && *argv) {
         origarg.argc = *argc;

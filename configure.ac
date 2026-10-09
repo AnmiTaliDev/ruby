@@ -204,6 +204,9 @@ AS_CASE(["$target_cpu-$target_os"],
 AS_CASE(["$target_vendor"],
     [vita], [
         target_os=vita
+    ],
+    [ps2], [
+        target_os=ps2
     ])
 
 
@@ -511,6 +514,9 @@ AS_CASE(["$target_os"],
   [vita*], [
     FIRSTMAKEFILE=GNUmakefile:vita/GNUmakefile.in
   ],
+  [ps2*], [
+    FIRSTMAKEFILE=GNUmakefile:ps2/GNUmakefile.in
+  ],
   [wasi*], [
     # Clang linker automatically uses wasm-opt with -O if it found.
     # https://github.com/llvm/llvm-project/blob/812828984c10857a4cd260eb638c52a4411f9143/clang/lib/Driver/ToolChains/WebAssembly.cpp#L95-L118
@@ -724,6 +730,7 @@ RUBY_WERROR_FLAG([
 ])
 
 : "rpath" && {
+    AS_CASE(["$target_os"], [ps2*], [rb_cv_binary_elf=no])
     AC_CACHE_CHECK(whether ELF binaries are produced, rb_cv_binary_elf,
         [AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[
             AS_CASE(["`head -1 conftest$EXEEXT | tr -dc '\177ELF' | tr '\177' .`"],
@@ -911,7 +918,7 @@ AS_IF([test "$GCC" = yes], [
 
     # -fstack-protector
     AS_CASE(["$target_os"],
-    [emscripten*|wasi*|vita*], [
+    [emscripten*|wasi*|vita*|ps2*], [
 	stack_protector=no
     ])
     AS_IF([test -z "${stack_protector+set}"], [
@@ -1401,6 +1408,18 @@ main()
 		ac_cv_func_fork=no
 		ac_cv_func_waitpid=no
 		ac_cv_func_kill=no
+		],
+	[ps2*],[	LIBS="-lm -latomic $LIBS"
+		ac_cv_func_fork=no
+		ac_cv_func_waitpid=no
+		ac_cv_func_kill=no
+		ac_cv_func_sigaction=no
+		ac_cv_func_sigaltstack=no
+		ac_cv_func_getrandom=no
+		ac_cv_func_writev=no
+		ac_cv_func_syscall=no
+		ac_cv_func___syscall=no
+		ac_cv_func_shutdown=no
 		],
 [wasi*],[	LIBS="-lm -lwasi-emulated-mman -lwasi-emulated-signal -lwasi-emulated-getpid -lwasi-emulated-process-clocks $LIBS"
 		RUBY_APPEND_OPTIONS(CFLAGS, -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID -D_WASI_EMULATED_PROCESS_CLOCKS)
@@ -2144,7 +2163,7 @@ AS_CASE(["$target_os"],[freebsd*],[
 
 # dup and dup2 are always available except for WASI
 AS_CASE(["$target_os"],
-    [wasi*|vita*], [],
+    [wasi*|vita*|ps2*], [],
     [
         RUBY_REQUIRE_FUNCS(dup dup2)
     ]
@@ -2873,6 +2892,9 @@ AS_CASE([$coroutine_type], [yes|''], [
         ],
         [arm*-vita*], [
             coroutine_type=arm32
+        ],
+        [mips64*-ps2*], [
+            coroutine_type=pthread
         ],
         [*-emscripten*], [
             coroutine_type=emscripten
@@ -4309,6 +4331,10 @@ enum {
     [vita*], [
         AC_LIBOBJ([vita/vita])
         PLATFORM_DIR=vita
+    ],
+    [ps2*], [
+        AC_LIBOBJ([ps2/ps2])
+        PLATFORM_DIR=ps2
     ],
     [wasi*], [
         AC_LIBOBJ([wasm/missing])

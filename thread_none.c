@@ -264,7 +264,11 @@ native_sleep(rb_thread_t *th, rb_hrtime_t *rel)
 {
     // No signal assumption allows the use of uninterruptible sleep
     struct timespec ts;
+#ifdef __ps2sdk__
+    (void)nanosleep(rb_hrtime2timespec(&ts, rel), NULL);
+#else
     (void)clock_nanosleep(CLOCK_REALTIME, 0, rb_hrtime2timespec(&ts, rel), NULL);
+#endif
 }
 
 static int

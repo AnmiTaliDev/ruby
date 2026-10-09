@@ -23,7 +23,7 @@ AC_ARG_WITH(thread,
         [mingw*], [
             THREAD_MODEL=win32
         ],
-        [wasi*], [
+        [wasi*|ps2*], [
             THREAD_MODEL=none
         ],
         [

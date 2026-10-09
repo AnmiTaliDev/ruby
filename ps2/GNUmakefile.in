@@ -1,0 +1,8 @@
+include Makefile
+include $(srcdir)/template/GNUmakefile.in
+
+ps2dir = $(srcdir)/ps2
+
+INCFLAGS += -I$(ps2dir)/include
+
+ps2/ps2.$(OBJEXT): $(ps2dir)/ps2.c $(ps2dir)/ps2.h $(PLATFORM_D)

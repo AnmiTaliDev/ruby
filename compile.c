@@ -12941,7 +12941,7 @@ ibf_table_find_or_insert(struct st_table *table, st_data_t key)
 
 /* dump/load generic */
 
-static void ibf_dump_object_list(struct ibf_dump *dump, ibf_offset_t *obj_list_offset, unsigned int *obj_list_size);
+static void ibf_dump_object_list(struct ibf_dump *dump, ibf_offset_t *obj_list_offset, uint32_t *obj_list_size);
 
 static VALUE ibf_load_object(const struct ibf_load *load, VALUE object_index);
 static rb_iseq_t *ibf_load_iseq(const struct ibf_load *load, const rb_iseq_t *index_iseq);
@@ -13841,7 +13841,7 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
 
 #if IBF_ISEQ_ENABLE_LOCAL_BUFFER
     ibf_offset_t local_obj_list_offset;
-    unsigned int local_obj_list_size;
+    uint32_t local_obj_list_size;
 
     ibf_dump_object_list(dump, &local_obj_list_offset, &local_obj_list_size);
 #endif
@@ -14924,7 +14924,7 @@ ibf_dump_object_list_i(st_data_t key, st_data_t val, st_data_t ptr)
 }
 
 static void
-ibf_dump_object_list(struct ibf_dump *dump, ibf_offset_t *obj_list_offset, unsigned int *obj_list_size)
+ibf_dump_object_list(struct ibf_dump *dump, ibf_offset_t *obj_list_offset, uint32_t *obj_list_size)
 {
     st_table *obj_table = dump->current_buffer->obj_table;
     VALUE offset_list = rb_ary_hidden_new(obj_table->num_entries);
@@ -14946,7 +14946,7 @@ ibf_dump_object_list(struct ibf_dump *dump, ibf_offset_t *obj_list_offset, unsig
         IBF_WV(offset);
     }
 
-    *obj_list_size = (unsigned int)size;
+    *obj_list_size = (uint32_t)size;
 }
 
 static void

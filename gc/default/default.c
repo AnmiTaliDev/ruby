@@ -215,6 +215,8 @@ static RB_THREAD_LOCAL_SPECIFIER int malloc_increase_local;
 #ifndef GC_CAN_COMPILE_COMPACTION
 #if defined(__wasi__) /* WebAssembly doesn't support signals */
 # define GC_CAN_COMPILE_COMPACTION 0
+#elif defined(__ps2sdk__)
+# define GC_CAN_COMPILE_COMPACTION 0
 #else
 # define GC_CAN_COMPILE_COMPACTION 1
 #endif
